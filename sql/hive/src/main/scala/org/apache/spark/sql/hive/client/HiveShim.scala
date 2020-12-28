@@ -29,6 +29,7 @@ import scala.util.control.NonFatal
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.hive.conf.HiveConf
 import org.apache.hadoop.hive.metastore.IMetaStoreClient
+import org.apache.hadoop.hive.metastore.TableType
 import org.apache.hadoop.hive.metastore.api.{Database, EnvironmentContext, Function => HiveFunction, FunctionType, MetaException, PrincipalType, ResourceType, ResourceUri}
 import org.apache.hadoop.hive.ql.Driver
 import org.apache.hadoop.hive.ql.io.AcidUtils
@@ -40,13 +41,13 @@ import org.apache.hadoop.hive.serde.serdeConstants
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.AnalysisException
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.analysis.NoSuchPermanentFunctionException
 import org.apache.spark.sql.catalyst.catalog.{CatalogFunction, CatalogTablePartition, CatalogUtils, FunctionResource, FunctionResourceType}
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.util.{DateFormatter, DateTimeUtils, TypeUtils}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{AtomicType, IntegralType, StringType}
+import org.apache.spark.sql.types.{AtomicType, DateType, IntegralType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.Utils
 
@@ -78,7 +79,11 @@ private[client] sealed abstract class Shim {
 
   def getAllPartitions(hive: Hive, table: Table): Seq[Partition]
 
-  def getPartitionsByFilter(hive: Hive, table: Table, predicates: Seq[Expression]): Seq[Partition]
+  def getPartitionsByFilter(
+      hive: Hive,
+      table: Table,
+      predicates: Seq[Expression],
+      timeZoneId: String): Seq[Partition]
 
   def getCommandProcessor(token: String, conf: HiveConf): CommandProcessor
 
@@ -89,6 +94,12 @@ private[client] sealed abstract class Shim {
   def alterTable(hive: Hive, tableName: String, table: Table): Unit
 
   def alterPartitions(hive: Hive, tableName: String, newParts: JList[Partition]): Unit
+
+  def getTablesByType(
+      hive: Hive,
+      dbName: String,
+      pattern: String,
+      tableType: TableType): Seq[String]
 
   def createPartitions(
       hive: Hive,
@@ -342,7 +353,8 @@ private[client] class Shim_v0_12 extends Shim with Logging {
   override def getPartitionsByFilter(
       hive: Hive,
       table: Table,
-      predicates: Seq[Expression]): Seq[Partition] = {
+      predicates: Seq[Expression],
+      timeZoneId: String): Seq[Partition] = {
     // getPartitionsByFilter() doesn't support binary comparison ops in Hive 0.12.
     // See HIVE-4888.
     logDebug("Hive 0.12 doesn't support predicate pushdown to metastore. " +
@@ -356,11 +368,20 @@ private[client] class Shim_v0_12 extends Shim with Logging {
   override def getDriverResults(driver: Driver): Seq[String] = {
     val res = new JArrayList[String]()
     getDriverResultsMethod.invoke(driver, res)
-    res.asScala
+    res.asScala.toSeq
   }
 
   override def getMetastoreClientConnectRetryDelayMillis(conf: HiveConf): Long = {
     conf.getIntVar(HiveConf.ConfVars.METASTORE_CLIENT_CONNECT_RETRY_DELAY) * 1000L
+  }
+
+  override def getTablesByType(
+      hive: Hive,
+      dbName: String,
+      pattern: String,
+      tableType: TableType): Seq[String] = {
+    throw new UnsupportedOperationException("Hive 2.2 and lower versions don't support " +
+      "getTablesByType. Please use Hive 2.3 or higher version.")
   }
 
   override def loadPartition(
@@ -584,7 +605,7 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
       }
       FunctionResource(FunctionResourceType.fromString(resourceType), uri.getUri())
     }
-    CatalogFunction(name, hf.getClassName, resources)
+    CatalogFunction(name, hf.getClassName, resources.toSeq)
   }
 
   override def getFunctionOption(hive: Hive, db: String, name: String): Option[CatalogFunction] = {
@@ -607,7 +628,7 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
   }
 
   override def listFunctions(hive: Hive, db: String, pattern: String): Seq[String] = {
-    hive.getFunctions(db, pattern).asScala
+    hive.getFunctions(db, pattern).asScala.toSeq
   }
 
   /**
@@ -616,7 +637,9 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
    *
    * Unsupported predicates are skipped.
    */
-  def convertFilters(table: Table, filters: Seq[Expression]): String = {
+  def convertFilters(table: Table, filters: Seq[Expression], timeZoneId: String): String = {
+    lazy val dateFormatter = DateFormatter(DateTimeUtils.getZoneId(timeZoneId))
+
     /**
      * An extractor that matches all binary comparison operators except null-safe equality.
      *
@@ -634,6 +657,8 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
         case Literal(null, _) => None // `null`s can be cast as other types; we want to avoid NPEs.
         case Literal(value, _: IntegralType) => Some(value.toString)
         case Literal(value, _: StringType) => Some(quoteStringLiteral(value.toString))
+        case Literal(value, _: DateType) =>
+          Some(dateFormatter.format(value.asInstanceOf[Int]))
         case _ => None
       }
     }
@@ -684,6 +709,21 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
       }
     }
 
+    object ExtractableDateValues {
+      private lazy val valueToLiteralString: PartialFunction[Any, String] = {
+        case value: Int => dateFormatter.format(value)
+      }
+
+      def unapply(values: Set[Any]): Option[Seq[String]] = {
+        val extractables = values.toSeq.map(valueToLiteralString.lift)
+        if (extractables.nonEmpty && extractables.forall(_.isDefined)) {
+          Some(extractables.map(_.get))
+        } else {
+          None
+        }
+      }
+    }
+
     object SupportedAttribute {
       // hive varchar is treated as catalyst string, but hive varchar can't be pushed down.
       private val varcharKeys = table.getPartitionKeys.asScala
@@ -692,9 +732,11 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
         .map(col => col.getName).toSet
 
       def unapply(attr: Attribute): Option[String] = {
-        if (varcharKeys.contains(attr.name)) {
+        val resolver = SQLConf.get.resolver
+        if (varcharKeys.exists(c => resolver(c, attr.name))) {
           None
-        } else if (attr.dataType.isInstanceOf[IntegralType] || attr.dataType == StringType) {
+        } else if (attr.dataType.isInstanceOf[IntegralType] || attr.dataType == StringType ||
+            attr.dataType == DateType) {
           Some(attr.name)
         } else {
           None
@@ -707,12 +749,13 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
     }
 
     val useAdvanced = SQLConf.get.advancedPartitionPredicatePushdownEnabled
+    val inSetThreshold = SQLConf.get.metastorePartitionPruningInSetThreshold
 
     object ExtractAttribute {
       def unapply(expr: Expression): Option[Attribute] = {
         expr match {
           case attr: Attribute => Some(attr)
-          case Cast(child @ AtomicType(), dt: AtomicType, _)
+          case Cast(child @ IntegralType(), dt: IntegralType, _)
               if Cast.canUpCast(child.dataType.asInstanceOf[AtomicType], dt) => unapply(child)
           case _ => None
         }
@@ -722,6 +765,16 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
     def convert(expr: Expression): Option[String] = expr match {
       case In(ExtractAttribute(SupportedAttribute(name)), ExtractableLiterals(values))
           if useAdvanced =>
+        Some(convertInToOr(name, values))
+
+      case InSet(child, values) if useAdvanced && values.size > inSetThreshold =>
+        val dataType = child.dataType
+        val sortedValues = values.toSeq.sorted(TypeUtils.getInterpretedOrdering(dataType))
+        convert(And(GreaterThanOrEqual(child, Literal(sortedValues.head, dataType)),
+          LessThanOrEqual(child, Literal(sortedValues.last, dataType))))
+
+      case InSet(child @ ExtractAttribute(SupportedAttribute(name)), ExtractableDateValues(values))
+          if useAdvanced && child.dataType == DateType =>
         Some(convertInToOr(name, values))
 
       case InSet(ExtractAttribute(SupportedAttribute(name)), ExtractableValues(values))
@@ -736,6 +789,15 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
           ExtractableLiteral(value), ExtractAttribute(SupportedAttribute(name))) =>
         Some(s"$value ${op.symbol} $name")
 
+      case Contains(ExtractAttribute(SupportedAttribute(name)), ExtractableLiteral(value)) =>
+        Some(s"$name like " + (("\".*" + value.drop(1)).dropRight(1) + ".*\""))
+
+      case StartsWith(ExtractAttribute(SupportedAttribute(name)), ExtractableLiteral(value)) =>
+        Some(s"$name like " + (value.dropRight(1) + ".*\""))
+
+      case EndsWith(ExtractAttribute(SupportedAttribute(name)), ExtractableLiteral(value)) =>
+        Some(s"$name like " + ("\".*" + value.drop(1)))
+
       case And(expr1, expr2) if useAdvanced =>
         val converted = convert(expr1) ++ convert(expr2)
         if (converted.isEmpty) {
@@ -749,6 +811,14 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
           left <- convert(expr1)
           right <- convert(expr2)
         } yield s"($left or $right)"
+
+      case Not(EqualTo(
+          ExtractAttribute(SupportedAttribute(name)), ExtractableLiteral(value))) if useAdvanced =>
+        Some(s"$name != $value")
+
+      case Not(EqualTo(
+          ExtractableLiteral(value), ExtractAttribute(SupportedAttribute(name)))) if useAdvanced =>
+        Some(s"$value != $name")
 
       case _ => None
     }
@@ -770,11 +840,12 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
   override def getPartitionsByFilter(
       hive: Hive,
       table: Table,
-      predicates: Seq[Expression]): Seq[Partition] = {
+      predicates: Seq[Expression],
+      timeZoneId: String): Seq[Partition] = {
 
     // Hive getPartitionsByFilter() takes a string that represents partition
     // predicates like "str_key=\"value\" and int_key=1 ..."
-    val filter = convertFilters(table, predicates)
+    val filter = convertFilters(table, predicates, timeZoneId)
 
     val partitions =
       if (filter.isEmpty) {
@@ -826,7 +897,7 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
         case s: String => s
         case a: Array[Object] => a(0).asInstanceOf[String]
       }
-    }
+    }.toSeq
   }
 
   override def getDatabaseOwnerName(db: Database): String = {
@@ -1220,7 +1291,24 @@ private[client] class Shim_v2_1 extends Shim_v2_0 {
 
 private[client] class Shim_v2_2 extends Shim_v2_1
 
-private[client] class Shim_v2_3 extends Shim_v2_1
+private[client] class Shim_v2_3 extends Shim_v2_1 {
+  private lazy val getTablesByTypeMethod =
+    findMethod(
+      classOf[Hive],
+      "getTablesByType",
+      classOf[String],
+      classOf[String],
+      classOf[TableType])
+
+  override def getTablesByType(
+      hive: Hive,
+      dbName: String,
+      pattern: String,
+      tableType: TableType): Seq[String] = {
+    getTablesByTypeMethod.invoke(hive, dbName, pattern, tableType)
+      .asInstanceOf[JList[String]].asScala.toSeq
+  }
+}
 
 private[client] class Shim_v3_0 extends Shim_v2_3 {
   // Spark supports only non-ACID operations
@@ -1293,10 +1381,7 @@ private[client] class Shim_v3_0 extends Shim_v2_3 {
       inheritTableSpecs: Boolean,
       isSkewedStoreAsSubdir: Boolean,
       isSrcLocal: Boolean): Unit = {
-    val session = SparkSession.getActiveSession
-    assert(session.nonEmpty)
-    val database = session.get.sessionState.catalog.getCurrentDatabase
-    val table = hive.getTable(database, tableName)
+    val table = hive.getTable(tableName)
     val loadFileType = if (replace) {
       clazzLoadFileType.getEnumConstants.find(_.toString.equalsIgnoreCase("REPLACE_ALL"))
     } else {

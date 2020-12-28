@@ -61,6 +61,15 @@ private[hive] trait HiveClient {
   /** Returns the names of tables in the given database that matches the given pattern. */
   def listTables(dbName: String, pattern: String): Seq[String]
 
+  /**
+   * Returns the names of tables with specific tableType in the given database that matches
+   * the given pattern.
+   */
+  def listTablesByType(
+      dbName: String,
+      pattern: String,
+      tableType: CatalogTableType): Seq[String]
+
   /** Sets the name of current database. */
   def setCurrentDatabase(databaseName: String): Unit
 
@@ -224,7 +233,8 @@ private[hive] trait HiveClient {
   /** Returns partitions filtered by predicates for the given table. */
   def getPartitionsByFilter(
       catalogTable: CatalogTable,
-      predicates: Seq[Expression]): Seq[CatalogTablePartition]
+      predicates: Seq[Expression],
+      timeZoneId: String): Seq[CatalogTablePartition]
 
   /** Loads a static partition into an existing table. */
   def loadPartition(

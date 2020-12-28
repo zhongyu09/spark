@@ -18,7 +18,7 @@
 package org.apache.spark.sql.catalyst.expressions
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.analysis.{TypeCheckResult, TypeCoercion}
+import org.apache.spark.sql.catalyst.analysis.TypeCheckResult
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
 import org.apache.spark.sql.catalyst.util.TypeUtils
@@ -43,7 +43,8 @@ import org.apache.spark.sql.types._
       > SELECT _FUNC_(NULL, 1, NULL);
        1
   """,
-  since = "1.0.0")
+  since = "1.0.0",
+  group = "conditional_funcs")
 // scalastyle:on line.size.limit
 case class Coalesce(children: Seq[Expression]) extends ComplexTypeMergingExpression {
 
@@ -129,7 +130,8 @@ case class Coalesce(children: Seq[Expression]) extends ComplexTypeMergingExpress
       > SELECT _FUNC_(NULL, array('2'));
        ["2"]
   """,
-  since = "2.0.0")
+  since = "2.0.0",
+  group = "conditional_funcs")
 case class IfNull(left: Expression, right: Expression, child: Expression)
   extends RuntimeReplaceable {
 
@@ -138,7 +140,7 @@ case class IfNull(left: Expression, right: Expression, child: Expression)
   }
 
   override def flatArguments: Iterator[Any] = Iterator(left, right)
-  override def sql: String = s"$prettyName(${left.sql}, ${right.sql})"
+  override def exprsReplaced: Seq[Expression] = Seq(left, right)
 }
 
 
@@ -149,7 +151,8 @@ case class IfNull(left: Expression, right: Expression, child: Expression)
       > SELECT _FUNC_(2, 2);
        NULL
   """,
-  since = "2.0.0")
+  since = "2.0.0",
+  group = "conditional_funcs")
 case class NullIf(left: Expression, right: Expression, child: Expression)
   extends RuntimeReplaceable {
 
@@ -158,7 +161,7 @@ case class NullIf(left: Expression, right: Expression, child: Expression)
   }
 
   override def flatArguments: Iterator[Any] = Iterator(left, right)
-  override def sql: String = s"$prettyName(${left.sql}, ${right.sql})"
+  override def exprsReplaced: Seq[Expression] = Seq(left, right)
 }
 
 
@@ -169,7 +172,8 @@ case class NullIf(left: Expression, right: Expression, child: Expression)
       > SELECT _FUNC_(NULL, array('2'));
        ["2"]
   """,
-  since = "2.0.0")
+  since = "2.0.0",
+  group = "conditional_funcs")
 case class Nvl(left: Expression, right: Expression, child: Expression) extends RuntimeReplaceable {
 
   def this(left: Expression, right: Expression) = {
@@ -177,7 +181,7 @@ case class Nvl(left: Expression, right: Expression, child: Expression) extends R
   }
 
   override def flatArguments: Iterator[Any] = Iterator(left, right)
-  override def sql: String = s"$prettyName(${left.sql}, ${right.sql})"
+  override def exprsReplaced: Seq[Expression] = Seq(left, right)
 }
 
 
@@ -189,7 +193,8 @@ case class Nvl(left: Expression, right: Expression, child: Expression) extends R
       > SELECT _FUNC_(NULL, 2, 1);
        1
   """,
-  since = "2.0.0")
+  since = "2.0.0",
+  group = "conditional_funcs")
 // scalastyle:on line.size.limit
 case class Nvl2(expr1: Expression, expr2: Expression, expr3: Expression, child: Expression)
   extends RuntimeReplaceable {
@@ -199,7 +204,7 @@ case class Nvl2(expr1: Expression, expr2: Expression, expr3: Expression, child: 
   }
 
   override def flatArguments: Iterator[Any] = Iterator(expr1, expr2, expr3)
-  override def sql: String = s"$prettyName(${expr1.sql}, ${expr2.sql}, ${expr3.sql})"
+  override def exprsReplaced: Seq[Expression] = Seq(expr1, expr2, expr3)
 }
 
 
@@ -213,7 +218,8 @@ case class Nvl2(expr1: Expression, expr2: Expression, expr3: Expression, child: 
       > SELECT _FUNC_(cast('NaN' as double));
        true
   """,
-  since = "1.5.0")
+  since = "1.5.0",
+  group = "predicate_funcs")
 case class IsNaN(child: Expression) extends UnaryExpression
   with Predicate with ImplicitCastInputTypes {
 
@@ -256,7 +262,8 @@ case class IsNaN(child: Expression) extends UnaryExpression
       > SELECT _FUNC_(cast('NaN' as double), 123);
        123.0
   """,
-  since = "1.5.0")
+  since = "1.5.0",
+  group = "conditional_funcs")
 case class NaNvl(left: Expression, right: Expression)
     extends BinaryExpression with ImplicitCastInputTypes {
 
@@ -317,7 +324,8 @@ case class NaNvl(left: Expression, right: Expression)
       > SELECT _FUNC_(1);
        false
   """,
-  since = "1.0.0")
+  since = "1.0.0",
+  group = "predicate_funcs")
 case class IsNull(child: Expression) extends UnaryExpression with Predicate {
   override def nullable: Boolean = false
 
@@ -344,7 +352,8 @@ case class IsNull(child: Expression) extends UnaryExpression with Predicate {
       > SELECT _FUNC_(1);
        true
   """,
-  since = "1.0.0")
+  since = "1.0.0",
+  group = "predicate_funcs")
 case class IsNotNull(child: Expression) extends UnaryExpression with Predicate {
   override def nullable: Boolean = false
 

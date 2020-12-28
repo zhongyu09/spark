@@ -20,28 +20,46 @@ license: |
 ---
 
 ### Description
+
 `ADD JAR` adds a JAR file to the list of resources. The added JAR file can be listed using [LIST JAR](sql-ref-syntax-aux-resource-mgmt-list-jar.html).
 
 ### Syntax
-{% highlight sql %}
+
+```sql
 ADD JAR file_name
-{% endhighlight %}
+```
 
 ### Parameters
-<dl>
- <dt><code><em>file_name</em></code></dt>
- <dd>The name of the JAR file to be added. It could be either on a local file system or a distributed file system.</dd>
-</dl>
 
+* **file_name**
+
+    The name of the JAR file to be added. It could be either on a local file system or a distributed file system or an Ivy URI.
+    Apache Ivy is a popular dependency manager focusing on flexibility and simplicity. Now we support two parameter in URI query string:
+
+     * transitive: whether to download dependent jars related to your ivy URL. It is case-sensitive and only take last one if multiple transitive parameters are specified.
+     * exclude: exclusion list during downloading Ivy URI jar and dependent jars.
+
+    User can write Ivy URI such as:
+
+      ivy://group:module:version
+      ivy://group:module:version?transitive=[true|false]
+      ivy://group:module:version?transitive=[true|false]&exclude=group:module,group:module
+        
 ### Examples
-{% highlight sql %}
+
+```sql
 ADD JAR /tmp/test.jar;
 ADD JAR "/path/to/some.jar";
 ADD JAR '/some/other.jar';
 ADD JAR "/path with space/abc.jar";
-{% endhighlight %}
+ADD JAR "ivy://group:module:version";
+ADD JAR "ivy://group:module:version?transitive=false"
+ADD JAR "ivy://group:module:version?transitive=true"
+ADD JAR "ivy://group:module:version?exclude=group:module&transitive=true"
+```
 
 ### Related Statements
- * [LIST JAR](sql-ref-syntax-aux-resource-mgmt-list-jar.html)
- * [ADD FILE](sql-ref-syntax-aux-resource-mgmt-add-file.html)
- * [LIST FILE](sql-ref-syntax-aux-resource-mgmt-list-file.html)
+
+* [LIST JAR](sql-ref-syntax-aux-resource-mgmt-list-jar.html)
+* [ADD FILE](sql-ref-syntax-aux-resource-mgmt-add-file.html)
+* [LIST FILE](sql-ref-syntax-aux-resource-mgmt-list-file.html)

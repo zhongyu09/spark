@@ -17,6 +17,8 @@
 
 package org.apache.spark.sql
 
+import scala.collection.JavaConverters._
+
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.plans.{Inner, InnerLike, LeftOuter, RightOuter}
 import org.apache.spark.sql.catalyst.plans.logical.{BROADCAST, Filter, HintInfo, Join, JoinHint, LogicalPlan, Project}
@@ -29,6 +31,7 @@ import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.sql.types._
 
 class DataFrameJoinSuite extends QueryTest
   with SharedSparkSession
@@ -117,6 +120,16 @@ class DataFrameJoinSuite extends QueryTest
 
     checkAnswer(
       df2.crossJoin(df1),
+      Row(2, "2", 1, "1") :: Row(2, "2", 3, "3") ::
+        Row(4, "4", 1, "1") :: Row(4, "4", 3, "3") :: Nil)
+
+    checkAnswer(
+      df1.join(df2, Nil, "cross"),
+      Row(1, "1", 2, "2") :: Row(1, "1", 4, "4") ::
+        Row(3, "3", 2, "2") :: Row(3, "3", 4, "4") :: Nil)
+
+    checkAnswer(
+      df2.join(df1, Nil, "cross"),
       Row(2, "2", 1, "1") :: Row(2, "2", 3, "3") ::
         Row(4, "4", 1, "1") :: Row(4, "4", 3, "3") :: Nil)
   }
@@ -332,7 +345,9 @@ class DataFrameJoinSuite extends QueryTest
 
     withTempDatabase { dbName =>
       withTable(table1Name, table2Name) {
-        withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+        withSQLConf(
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
           spark.range(50).write.saveAsTable(s"$dbName.$table1Name")
           spark.range(100).write.saveAsTable(s"$dbName.$table2Name")
 
@@ -345,7 +360,7 @@ class DataFrameJoinSuite extends QueryTest
             }
             assert(broadcastExchanges.size == 1)
             val tables = broadcastExchanges.head.collect {
-              case FileSourceScanExec(_, _, _, _, _, _, Some(tableIdent)) => tableIdent
+              case FileSourceScanExec(_, _, _, _, _, _, _, Some(tableIdent), _) => tableIdent
             }
             assert(tables.size == 1)
             assert(tables.head === TableIdentifier(table1Name, Some(dbName)))
@@ -417,5 +432,41 @@ class DataFrameJoinSuite extends QueryTest
         }
       }
     }
+  }
+
+  test("SPARK-32693: Compare two dataframes with same schema except nullable property") {
+    val schema1 = StructType(
+      StructField("a", IntegerType, false) ::
+        StructField("b", IntegerType, false) ::
+        StructField("c", IntegerType, false) :: Nil)
+    val rowSeq1: List[Row] = List(Row(10, 1, 1), Row(10, 50, 2))
+    val df1 = spark.createDataFrame(rowSeq1.asJava, schema1)
+
+    val schema2 = StructType(
+      StructField("a", IntegerType) ::
+        StructField("b", IntegerType) ::
+        StructField("c", IntegerType) :: Nil)
+    val rowSeq2: List[Row] = List(Row(10, 1, 1))
+    val df2 = spark.createDataFrame(rowSeq2.asJava, schema2)
+
+    checkAnswer(df1.except(df2), Row(10, 50, 2))
+
+    val schema3 = StructType(
+      StructField("a", IntegerType, false) ::
+        StructField("b", IntegerType, false) ::
+        StructField("c", IntegerType, false) ::
+        StructField("d", schema1, false) :: Nil)
+    val rowSeq3: List[Row] = List(Row(10, 1, 1, Row(10, 1, 1)), Row(10, 50, 2, Row(10, 50, 2)))
+    val df3 = spark.createDataFrame(rowSeq3.asJava, schema3)
+
+    val schema4 = StructType(
+      StructField("a", IntegerType) ::
+        StructField("b", IntegerType) ::
+        StructField("b", IntegerType) ::
+        StructField("d", schema2) :: Nil)
+    val rowSeq4: List[Row] = List(Row(10, 1, 1, Row(10, 1, 1)))
+    val df4 = spark.createDataFrame(rowSeq4.asJava, schema4)
+
+    checkAnswer(df3.except(df4), Row(10, 50, 2, Row(10, 50, 2)))
   }
 }

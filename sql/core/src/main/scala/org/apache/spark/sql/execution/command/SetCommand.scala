@@ -20,7 +20,7 @@ package org.apache.spark.sql.execution.command
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{Row, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.catalyst.plans.logical.{IgnoreCachedData, LogicalPlan}
+import org.apache.spark.sql.catalyst.plans.logical.IgnoreCachedData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.StaticSQLConf.CATALOG_IMPLEMENTATION
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
@@ -162,15 +162,29 @@ object SetCommand {
 }
 
 /**
- * This command is for resetting SQLConf to the default values. Command that runs
+ * This command is for resetting SQLConf to the default values. Any configurations that were set
+ * via [[SetCommand]] will get reset to default value. Command that runs
  * {{{
  *   reset;
+ *   reset spark.sql.session.timeZone;
  * }}}
  */
-case object ResetCommand extends RunnableCommand with IgnoreCachedData {
+case class ResetCommand(config: Option[String]) extends RunnableCommand with IgnoreCachedData {
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
-    sparkSession.sessionState.conf.clear()
+    val globalInitialConfigs = sparkSession.sharedState.conf
+    config match {
+      case Some(key) =>
+        sparkSession.conf.unset(key)
+        sparkSession.initialSessionOptions.get(key)
+          .orElse(globalInitialConfigs.getOption(key))
+          .foreach(sparkSession.conf.set(key, _))
+      case None =>
+        sparkSession.sessionState.conf.clear()
+        SQLConf.mergeSparkConf(sparkSession.sessionState.conf, globalInitialConfigs)
+        SQLConf.mergeNonStaticSQLConfigs(sparkSession.sessionState.conf,
+          sparkSession.initialSessionOptions)
+    }
     Seq.empty[Row]
   }
 }

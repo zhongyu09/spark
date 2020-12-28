@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.IntegerType
+import org.apache.spark.sql.types.{IntegerType, LongType, StringType}
 
 /**
  * Parser test cases for rules defined in [[CatalystSqlParser]] / [[AstBuilder]].
@@ -55,9 +55,14 @@ class PlanParserSuite extends AnalysisTest {
     With(plan, ctes)
   }
 
-  test("single comment") {
+  test("single comment case one") {
     val plan = table("a").select(star())
     assertEqual("-- single comment\nSELECT * FROM a", plan)
+  }
+
+  test("single comment case two") {
+    val plan = table("a").select(star())
+    assertEqual("-- single comment\\\nwith line continuity\nSELECT * FROM a", plan)
   }
 
   test("bracketed comment case one") {
@@ -208,7 +213,7 @@ class PlanParserSuite extends AnalysisTest {
     assertEqual("select a, b from db.c where x < 1", table("db", "c").where('x < 1).select('a, 'b))
     assertEqual(
       "select a, b from db.c having x < 1",
-      table("db", "c").groupBy()('a, 'b).where('x < 1))
+      table("db", "c").having()('a, 'b)('x < 1))
     assertEqual("select distinct a, b from db.c", Distinct(table("db", "c").select('a, 'b)))
     assertEqual("select all a, b from db.c", table("db", "c").select('a, 'b))
     assertEqual("select from tbl", OneRowRelation().select('from.as("tbl")))
@@ -290,7 +295,7 @@ class PlanParserSuite extends AnalysisTest {
         partition: Map[String, Option[String]],
         overwrite: Boolean = false,
         ifPartitionNotExists: Boolean = false): LogicalPlan =
-      InsertIntoStatement(table("s"), partition, plan, overwrite, ifPartitionNotExists)
+      InsertIntoStatement(table("s"), partition, Nil, plan, overwrite, ifPartitionNotExists)
 
     // Single inserts
     assertEqual(s"insert overwrite table s $sql",
@@ -574,8 +579,7 @@ class PlanParserSuite extends AnalysisTest {
     assertEqual(
       "select g from t group by g having a > (select b from s)",
       table("t")
-        .groupBy('g)('g)
-        .where('a > ScalarSubquery(table("s").select('b))))
+        .having('g)('g)('a > ScalarSubquery(table("s").select('b))))
   }
 
   test("table reference") {
@@ -709,7 +713,7 @@ class PlanParserSuite extends AnalysisTest {
     comparePlans(
       parsePlan(
         "INSERT INTO s SELECT /*+ REPARTITION(100), COALESCE(500), COALESCE(10) */ * FROM t"),
-      InsertIntoStatement(table("s"), Map.empty,
+      InsertIntoStatement(table("s"), Map.empty, Nil,
         UnresolvedHint("REPARTITION", Seq(Literal(100)),
           UnresolvedHint("COALESCE", Seq(Literal(500)),
             UnresolvedHint("COALESCE", Seq(Literal(10)),
@@ -1019,5 +1023,123 @@ class PlanParserSuite extends AnalysisTest {
     assertEqual(
       "WITH t(x) AS (SELECT c FROM a) SELECT * FROM t",
       cte(table("t").select(star()), "t" -> ((table("a").select('c), Seq("x")))))
+  }
+
+  test("statement containing terminal semicolons") {
+    assertEqual("select 1;", OneRowRelation().select(1))
+    assertEqual("select a, b;", OneRowRelation().select('a, 'b))
+    assertEqual("select a, b from db.c;;;", table("db", "c").select('a, 'b))
+    assertEqual("select a, b from db.c; ;;  ;", table("db", "c").select('a, 'b))
+  }
+
+  test("SPARK-32106: TRANSFORM plan") {
+    // verify schema less
+    assertEqual(
+      """
+        |SELECT TRANSFORM(a, b, c)
+        |USING 'cat'
+        |FROM testData
+      """.stripMargin,
+      ScriptTransformation(
+        Seq('a, 'b, 'c),
+        "cat",
+        Seq(AttributeReference("key", StringType)(),
+          AttributeReference("value", StringType)()),
+        UnresolvedRelation(TableIdentifier("testData")),
+        ScriptInputOutputSchema(List.empty, List.empty, None, None,
+          List.empty, List.empty, None, None, true))
+    )
+
+    // verify without output schema
+    assertEqual(
+      """
+        |SELECT TRANSFORM(a, b, c)
+        |USING 'cat' AS (a, b, c)
+        |FROM testData
+      """.stripMargin,
+      ScriptTransformation(
+        Seq('a, 'b, 'c),
+        "cat",
+        Seq(AttributeReference("a", StringType)(),
+          AttributeReference("b", StringType)(),
+          AttributeReference("c", StringType)()),
+        UnresolvedRelation(TableIdentifier("testData")),
+        ScriptInputOutputSchema(List.empty, List.empty, None, None,
+          List.empty, List.empty, None, None, false)))
+
+    // verify with output schema
+    assertEqual(
+      """
+        |SELECT TRANSFORM(a, b, c)
+        |USING 'cat' AS (a int, b string, c long)
+        |FROM testData
+      """.stripMargin,
+      ScriptTransformation(
+        Seq('a, 'b, 'c),
+        "cat",
+        Seq(AttributeReference("a", IntegerType)(),
+          AttributeReference("b", StringType)(),
+          AttributeReference("c", LongType)()),
+        UnresolvedRelation(TableIdentifier("testData")),
+        ScriptInputOutputSchema(List.empty, List.empty, None, None,
+          List.empty, List.empty, None, None, false)))
+
+    // verify with ROW FORMAT DELIMETED
+    assertEqual(
+      """
+        |SELECT TRANSFORM(a, b, c)
+        |  ROW FORMAT DELIMITED
+        |  FIELDS TERMINATED BY '\t'
+        |  COLLECTION ITEMS TERMINATED BY '\u0002'
+        |  MAP KEYS TERMINATED BY '\u0003'
+        |  LINES TERMINATED BY '\n'
+        |  NULL DEFINED AS 'null'
+        |  USING 'cat' AS (a, b, c)
+        |  ROW FORMAT DELIMITED
+        |  FIELDS TERMINATED BY '\t'
+        |  COLLECTION ITEMS TERMINATED BY '\u0004'
+        |  MAP KEYS TERMINATED BY '\u0005'
+        |  LINES TERMINATED BY '\n'
+        |  NULL DEFINED AS 'NULL'
+        |FROM testData
+      """.stripMargin,
+      ScriptTransformation(
+        Seq('a, 'b, 'c),
+        "cat",
+        Seq(AttributeReference("a", StringType)(),
+          AttributeReference("b", StringType)(),
+          AttributeReference("c", StringType)()),
+        UnresolvedRelation(TableIdentifier("testData")),
+        ScriptInputOutputSchema(
+          Seq(("TOK_TABLEROWFORMATFIELD", "\t"),
+            ("TOK_TABLEROWFORMATCOLLITEMS", "\u0002"),
+            ("TOK_TABLEROWFORMATMAPKEYS", "\u0003"),
+            ("TOK_TABLEROWFORMATNULL", "null"),
+            ("TOK_TABLEROWFORMATLINES", "\n")),
+          Seq(("TOK_TABLEROWFORMATFIELD", "\t"),
+            ("TOK_TABLEROWFORMATCOLLITEMS", "\u0004"),
+            ("TOK_TABLEROWFORMATMAPKEYS", "\u0005"),
+            ("TOK_TABLEROWFORMATNULL", "NULL"),
+            ("TOK_TABLEROWFORMATLINES", "\n")), None, None,
+          List.empty, List.empty, None, None, false)))
+
+    // verify with ROW FORMAT SERDE
+    intercept(
+      """
+        |SELECT TRANSFORM(a, b, c)
+        |  ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+        |  WITH SERDEPROPERTIES(
+        |    "separatorChar" = "\t",
+        |    "quoteChar" = "'",
+        |    "escapeChar" = "\\")
+        |  USING 'cat' AS (a, b, c)
+        |  ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+        |  WITH SERDEPROPERTIES(
+        |    "separatorChar" = "\t",
+        |    "quoteChar" = "'",
+        |    "escapeChar" = "\\")
+        |FROM testData
+      """.stripMargin,
+      "TRANSFORM with serde is only supported in hive mode")
   }
 }

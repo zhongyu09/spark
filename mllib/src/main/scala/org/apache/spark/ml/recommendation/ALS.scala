@@ -27,11 +27,12 @@ import scala.util.{Sorting, Try}
 import scala.util.hashing.byteswap64
 
 import com.github.fommil.netlib.BLAS.{getInstance => blas}
+import com.google.common.collect.{Ordering => GuavaOrdering}
 import org.apache.hadoop.fs.Path
 import org.json4s.DefaultFormats
 import org.json4s.JsonDSL._
 
-import org.apache.spark.{Dependency, Partitioner, ShuffleDependency, SparkContext, SparkException}
+import org.apache.spark.{Partitioner, SparkException}
 import org.apache.spark.annotation.Since
 import org.apache.spark.internal.Logging
 import org.apache.spark.ml.{Estimator, Model}
@@ -47,7 +48,7 @@ import org.apache.spark.sql.{DataFrame, Dataset}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 import org.apache.spark.storage.StorageLevel
-import org.apache.spark.util.{BoundedPriorityQueue, Utils}
+import org.apache.spark.util.Utils
 import org.apache.spark.util.collection.{OpenHashMap, OpenHashSet, SortDataFormat, Sorter}
 import org.apache.spark.util.random.XORShiftRandom
 
@@ -456,30 +457,39 @@ class ALSModel private[ml] (
       num: Int,
       blockSize: Int): DataFrame = {
     import srcFactors.sparkSession.implicits._
+    import scala.collection.JavaConverters._
 
     val srcFactorsBlocked = blockify(srcFactors.as[(Int, Array[Float])], blockSize)
     val dstFactorsBlocked = blockify(dstFactors.as[(Int, Array[Float])], blockSize)
     val ratings = srcFactorsBlocked.crossJoin(dstFactorsBlocked)
-      .as[(Seq[(Int, Array[Float])], Seq[(Int, Array[Float])])]
-      .flatMap { case (srcIter, dstIter) =>
-        val m = srcIter.size
-        val n = math.min(dstIter.size, num)
-        val output = new Array[(Int, Int, Float)](m * n)
-        var i = 0
-        val pq = new BoundedPriorityQueue[(Int, Float)](num)(Ordering.by(_._2))
-        srcIter.foreach { case (srcId, srcFactor) =>
-          dstIter.foreach { case (dstId, dstFactor) =>
-            // We use F2jBLAS which is faster than a call to native BLAS for vector dot product
-            val score = BLAS.f2jBLAS.sdot(rank, srcFactor, 1, dstFactor, 1)
-            pq += dstId -> score
+      .as[(Array[Int], Array[Float], Array[Int], Array[Float])]
+      .mapPartitions { iter =>
+        var scores: Array[Float] = null
+        var idxOrd: GuavaOrdering[Int] = null
+        iter.flatMap { case (srcIds, srcMat, dstIds, dstMat) =>
+          require(srcMat.length == srcIds.length * rank)
+          require(dstMat.length == dstIds.length * rank)
+          val m = srcIds.length
+          val n = dstIds.length
+          if (scores == null || scores.length < n) {
+            scores = Array.ofDim[Float](n)
+            idxOrd = new GuavaOrdering[Int] {
+              override def compare(left: Int, right: Int): Int = {
+                Ordering[Float].compare(scores(left), scores(right))
+              }
+            }
           }
-          pq.foreach { case (dstId, score) =>
-            output(i) = (srcId, dstId, score)
-            i += 1
+
+          Iterator.range(0, m).flatMap { i =>
+            // buffer = i-th vec in srcMat * dstMat
+            BLAS.f2jBLAS.sgemv("T", rank, n, 1.0F, dstMat, 0, rank,
+              srcMat, i * rank, 1, 0.0F, scores, 0, 1)
+
+            val srcId = srcIds(i)
+            idxOrd.greatestOf(Iterator.range(0, n).asJava, num).asScala
+              .iterator.map { j => (srcId, dstIds(j), scores(j)) }
           }
-          pq.clear()
         }
-        output.toSeq
       }
     // We'll force the IDs to be Int. Unfortunately this converts IDs to Int in the output.
     val topKAggregator = new TopByKeyAggregator[Int, Int, Float](num, Ordering.by(_._2))
@@ -499,9 +509,12 @@ class ALSModel private[ml] (
    */
   private def blockify(
       factors: Dataset[(Int, Array[Float])],
-      blockSize: Int): Dataset[Seq[(Int, Array[Float])]] = {
+      blockSize: Int): Dataset[(Array[Int], Array[Float])] = {
     import factors.sparkSession.implicits._
-    factors.mapPartitions(_.grouped(blockSize))
+    factors.mapPartitions { iter =>
+      iter.grouped(blockSize)
+        .map(block => (block.map(_._1).toArray, block.flatMap(_._2).toArray))
+    }
   }
 
 }
@@ -1003,7 +1016,6 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
         previousItemFactors.unpersist()
         itemFactors.setName(s"itemFactors-$iter").persist(intermediateRDDStorageLevel)
         // TODO: Generalize PeriodicGraphCheckpointer and use it here.
-        val deps = itemFactors.dependencies
         if (shouldCheckpoint(iter)) {
           itemFactors.checkpoint() // itemFactors gets materialized in computeFactors
         }
@@ -1011,7 +1023,7 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
         userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
           itemLocalIndexEncoder, implicitPrefs, alpha, solver)
         if (shouldCheckpoint(iter)) {
-          ALS.cleanShuffleDependencies(sc, deps)
+          itemFactors.cleanShuffleDependencies()
           deletePreviousCheckpointFile()
           previousCheckpointFile = itemFactors.getCheckpointFile
         }
@@ -1024,10 +1036,9 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
           userLocalIndexEncoder, solver = solver)
         if (shouldCheckpoint(iter)) {
           itemFactors.setName(s"itemFactors-$iter").persist(intermediateRDDStorageLevel)
-          val deps = itemFactors.dependencies
           itemFactors.checkpoint()
           itemFactors.count() // checkpoint item factors and cut lineage
-          ALS.cleanShuffleDependencies(sc, deps)
+          itemFactors.cleanShuffleDependencies()
           deletePreviousCheckpointFile()
 
           previousCachedItemFactors.foreach(_.unpersist())
@@ -1815,31 +1826,4 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
    * satisfies this requirement, we simply use a type alias here.
    */
   private[recommendation] type ALSPartitioner = org.apache.spark.HashPartitioner
-
-  /**
-   * Private function to clean up all of the shuffles files from the dependencies and their parents.
-   */
-  private[spark] def cleanShuffleDependencies[T](
-      sc: SparkContext,
-      deps: Seq[Dependency[_]],
-      blocking: Boolean = false): Unit = {
-    // If there is no reference tracking we skip clean up.
-    sc.cleaner.foreach { cleaner =>
-      /**
-       * Clean the shuffles & all of its parents.
-       */
-      def cleanEagerly(dep: Dependency[_]): Unit = {
-        if (dep.isInstanceOf[ShuffleDependency[_, _, _]]) {
-          val shuffleId = dep.asInstanceOf[ShuffleDependency[_, _, _]].shuffleId
-          cleaner.doCleanupShuffle(shuffleId, blocking)
-        }
-        val rdd = dep.rdd
-        val rddDeps = rdd.dependencies
-        if (rdd.getStorageLevel == StorageLevel.NONE && rddDeps != null) {
-          rddDeps.foreach(cleanEagerly)
-        }
-      }
-      deps.foreach(cleanEagerly)
-    }
-  }
 }

@@ -138,7 +138,7 @@ struct<>
 -- !query output
 org.apache.spark.sql.catalyst.parser.ParseException
 
-extraneous input 'ROLLUP' expecting <EOF>(line 1, pos 53)
+extraneous input 'ROLLUP' expecting {<EOF>, ';'}(line 1, pos 53)
 
 == SQL ==
 SELECT a, b, c, count(d) FROM grouping GROUP BY WITH ROLLUP
@@ -152,7 +152,7 @@ struct<>
 -- !query output
 org.apache.spark.sql.catalyst.parser.ParseException
 
-extraneous input 'CUBE' expecting <EOF>(line 1, pos 53)
+extraneous input 'CUBE' expecting {<EOF>, ';'}(line 1, pos 53)
 
 == SQL ==
 SELECT a, b, c, count(d) FROM grouping GROUP BY WITH CUBE
@@ -165,7 +165,7 @@ SELECT c1 FROM (values (1,2), (3,2)) t(c1, c2) GROUP BY GROUPING SETS (())
 struct<>
 -- !query output
 org.apache.spark.sql.AnalysisException
-expression '`c1`' is neither present in the group by, nor is it an aggregate function. Add to group by or wrap in first() (or first_value) if you don't care which value you get.;
+expression '`c1`' is neither present in the group by, nor is it an aggregate function. Add to group by or wrap in first() (or first_value) if you don't care which value you get.
 
 
 -- !query

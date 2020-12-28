@@ -40,6 +40,7 @@ SELECT substring('Spark SQL' from -3);
 SELECT substring('Spark SQL' from 5 for 1);
 
 -- trim
+SELECT trim(" xyz "), ltrim(" xyz "), rtrim(" xyz ");
 SELECT trim(BOTH 'xyz' FROM 'yxTomxx'), trim('xyz' FROM 'yxTomxx');
 SELECT trim(BOTH 'x' FROM 'xxxbarxxx'), trim('x' FROM 'xxxbarxxx');
 SELECT trim(LEADING 'xyz' FROM 'zzzytest');
@@ -48,3 +49,17 @@ SELECT trim(LEADING 'xy' FROM 'xyxXxyLAST WORD');
 SELECT trim(TRAILING 'xyz' FROM 'testxxzx');
 SELECT trim(TRAILING 'xyz' FROM 'xyztestxxzx');
 SELECT trim(TRAILING 'xy' FROM 'TURNERyxXxy');
+
+-- Check lpad/rpad with invalid length parameter
+SELECT lpad('hi', 'invalid_length');
+SELECT rpad('hi', 'invalid_length');
+
+-- decode
+select decode();
+select decode(encode('abc', 'utf-8'));
+select decode(encode('abc', 'utf-8'), 'utf-8');
+select decode(1, 1, 'Southlake');
+select decode(2, 1, 'Southlake');
+select decode(2, 1, 'Southlake', 2, 'San Francisco', 3, 'New Jersey', 4, 'Seattle', 'Non domestic');
+select decode(6, 1, 'Southlake', 2, 'San Francisco', 3, 'New Jersey', 4, 'Seattle', 'Non domestic');
+select decode(6, 1, 'Southlake', 2, 'San Francisco', 3, 'New Jersey', 4, 'Seattle');
