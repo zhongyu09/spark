@@ -22,7 +22,7 @@ import java.net.URI
 
 import org.apache.log4j.Level
 
-import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent, SparkListenerJobStart}
+import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent, SparkListenerJobStart, SparkListenerStageSubmitted, StageInfo}
 import org.apache.spark.sql.{Dataset, QueryTest, Row, SparkSession, Strategy}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LogicalPlan}
@@ -39,8 +39,10 @@ import org.apache.spark.sql.internal.SQLConf.PartitionOverwriteMode
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.{IntegerType, StructType}
 import org.apache.spark.sql.util.QueryExecutionListener
+import org.apache.spark.tags.AQETest
 import org.apache.spark.util.Utils
 
+@AQETest
 class AdaptiveQueryExecSuite
   extends QueryTest
   with SharedSparkSession
@@ -1444,14 +1446,23 @@ class AdaptiveQueryExecSuite
     val testDf = df.groupBy("index")
       .agg(sum($"pv").alias("pv"))
       .join(dim, Seq("index"))
+
+    val stageInfos = scala.collection.mutable.ArrayBuffer[StageInfo]()
+    val listener = new SparkListener {
+      override def onStageSubmitted(stageSubmitted: SparkListenerStageSubmitted): Unit = {
+        stageInfos += stageSubmitted.stageInfo
+      }
+    }
+    spark.sparkContext.addSparkListener(listener)
+
     withSQLConf(SQLConf.BROADCAST_TIMEOUT.key -> broadcastTimeoutInSec.toString,
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
-      val startTime = System.currentTimeMillis()
       val result = testDf.collect()
-      val queryTime = System.currentTimeMillis() - startTime
       assert(result.length == 26)
-      // make sure the execution time is large enough
-      assert(queryTime > (broadcastTimeoutInSec + 1) * 1000)
+      stageInfos.foreach(t => {
+        print(t.stageId + "; " + t.submissionTime + "; " + t.numTasks + "; "
+          + t.name + "; " + t.rddInfos.mkString(",") + "\n")
+      })
     }
   }
 
