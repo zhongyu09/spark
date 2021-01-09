@@ -1435,34 +1435,46 @@ class AdaptiveQueryExecSuite
   }
 
   test("SPARK-33933: AQE broadcast should not timeout with slow map tasks") {
-    val broadcastTimeoutInSec = 1
-    val df = spark.sparkContext.parallelize(Range(0, 100), 100)
-      .flatMap(x => {
-        Thread.sleep(20)
-        for (i <- Range(0, 100)) yield (x % 26, x % 10)
-      }).toDF("index", "pv")
-    val dim = Range(0, 26).map(x => (x, ('a' + x).toChar.toString))
-      .toDF("index", "name")
-    val testDf = df.groupBy("index")
-      .agg(sum($"pv").alias("pv"))
-      .join(dim, Seq("index"))
+    for (i <- Range(0, 100)) {
+      print("Test round: " + i + "\n")
+      val broadcastTimeoutInSec = 1
+      val df = spark.sparkContext.parallelize(Range(0, 100), 100)
+        .flatMap(x => {
+          Thread.sleep(20)
+          for (i <- Range(0, 100)) yield (x % 26, x % 10)
+        }).toDF("index", "pv")
+      val dim = spark.sparkContext.parallelize(Range(0, 26))
+        .map(x => (x, ('a' + x).toChar.toString))
+        .toDF("index", "name")
+        .coalesce(1)
+      val testDf = df.groupBy("index")
+        .agg(sum($"pv").alias("pv"))
+        .join(dim, Seq("index"))
 
-    val stageInfos = scala.collection.mutable.ArrayBuffer[StageInfo]()
-    val listener = new SparkListener {
-      override def onStageSubmitted(stageSubmitted: SparkListenerStageSubmitted): Unit = {
-        stageInfos += stageSubmitted.stageInfo
+      val stageInfos = scala.collection.mutable.ArrayBuffer[StageInfo]()
+      val listener = new SparkListener {
+        override def onStageSubmitted(stageSubmitted: SparkListenerStageSubmitted): Unit = {
+          stageInfos += stageSubmitted.stageInfo
+        }
       }
-    }
-    spark.sparkContext.addSparkListener(listener)
+      spark.sparkContext.addSparkListener(listener)
 
-    withSQLConf(SQLConf.BROADCAST_TIMEOUT.key -> broadcastTimeoutInSec.toString,
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
-      val result = testDf.collect()
-      assert(result.length == 26)
-      stageInfos.foreach(t => {
-        print(t.stageId + "; " + t.submissionTime + "; " + t.numTasks + "; "
-          + t.name + "; " + t.rddInfos.mkString(",") + "\n")
-      })
+      withSQLConf(SQLConf.BROADCAST_TIMEOUT.key -> broadcastTimeoutInSec.toString,
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
+        val startTime = System.currentTimeMillis()
+        try {
+          val result = testDf.collect()
+          assert(result.length == 26)
+        } catch {
+          case e: Exception => print("Fail: " + e + "\n")
+        }
+        val queryTime = System.currentTimeMillis() - startTime
+        print("queryTime: " + queryTime + "\n")
+        stageInfos.foreach(t => {
+          print(t.stageId + "; " + t.submissionTime + "; " + t.numTasks + "; "
+            + t.name + "; " + t.rddInfos.mkString(",") + "\n")
+        })
+      }
     }
   }
 
