@@ -159,6 +159,7 @@ case class ShuffleQueryStageExec(
   }
 
   override def doMaterialize(): Future[Any] = attachTree(this, "execute") {
+    print(System.currentTimeMillis() + " ShuffleQueryStageExec.doMaterialize \n")
     shuffle.mapOutputStatisticsFuture
   }
 
@@ -212,6 +213,7 @@ case class BroadcastQueryStageExec(
     val promise = Promise[Any]()
     val fail = BroadcastQueryStageExec.scheduledExecutor.schedule(new Runnable() {
       override def run(): Unit = {
+        print(System.currentTimeMillis() + " promise.tryFailure \n")
         promise.tryFailure(new SparkException(s"Could not execute broadcast in $timeout secs. " +
           s"You can increase the timeout for broadcasts via ${SQLConf.BROADCAST_TIMEOUT.key} or " +
           s"disable broadcast join by setting ${SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key} to -1"))
@@ -222,7 +224,14 @@ case class BroadcastQueryStageExec(
       Seq(broadcastFuture, promise.future))(AdaptiveSparkPlanExec.executionContext)
   }
 
+  override def doPrepare(): Unit = {
+    print(System.currentTimeMillis() + " BroadcastQueryStageExec.doPrepare \n")
+    print(System.currentTimeMillis() + " plan.prepare() + " + plan + " \n")
+    plan.prepare()
+  }
+
   override def doMaterialize(): Future[Any] = {
+    print(System.currentTimeMillis() + " BroadcastQueryStageExec.doMaterialize \n")
     materializeWithTimeout
   }
 

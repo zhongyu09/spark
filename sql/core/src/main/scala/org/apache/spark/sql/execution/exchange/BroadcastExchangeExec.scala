@@ -114,6 +114,7 @@ case class BroadcastExchangeExec(
             sparkContext.setJobGroup(runId.toString, s"broadcast exchange (runId $runId)",
               interruptOnCancel = true)
             val beforeCollect = System.nanoTime()
+            print(System.currentTimeMillis() + " beforeCollect \n")
             // Use executeCollect/executeCollectIterator to avoid conversion to Scala types
             val (numRows, input) = child.executeCollectIterator()
             longMetric("numOutputRows") += numRows
@@ -123,6 +124,7 @@ case class BroadcastExchangeExec(
             }
 
             val beforeBuild = System.nanoTime()
+            print(System.currentTimeMillis() + " beforeBuild \n")
             longMetric("collectTime") += NANOSECONDS.toMillis(beforeBuild - beforeCollect)
 
             // Construct the relation.
@@ -153,6 +155,7 @@ case class BroadcastExchangeExec(
               System.nanoTime() - beforeBroadcast)
             val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
             SQLMetrics.postDriverMetricUpdates(sparkContext, executionId, metrics.values.toSeq)
+            print(System.currentTimeMillis() + " promise.trySuccess(broadcasted) \n")
             promise.trySuccess(broadcasted)
             broadcasted
           } catch {
@@ -181,6 +184,7 @@ case class BroadcastExchangeExec(
 
   override protected def doPrepare(): Unit = {
     // Materialize the future.
+    print(System.currentTimeMillis() + " BroadcastExchangeExec.doPrepare() + \n")
     relationFuture
   }
 

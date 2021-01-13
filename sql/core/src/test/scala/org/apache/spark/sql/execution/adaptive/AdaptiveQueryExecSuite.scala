@@ -1435,15 +1435,17 @@ class AdaptiveQueryExecSuite
   }
 
   test("SPARK-33933: AQE broadcast should not timeout with slow map tasks") {
-    for (i <- Range(0, 100)) {
-      print("Test round: " + i + "\n")
+    for (i <- Range(0, 10)) {
+      Thread.sleep(5000)
+      print("\n\nTest round: " + i + "\n")
       val broadcastTimeoutInSec = 1
-      val df = spark.sparkContext.parallelize(Range(0, 100), 100)
+      val shuffleMapTaskParallsm = 100
+      val df = spark.sparkContext.parallelize(Range(0, 100), shuffleMapTaskParallsm)
         .flatMap(x => {
-          Thread.sleep(20)
+          Thread.sleep(50)
           for (i <- Range(0, 100)) yield (x % 26, x % 10)
         }).toDF("index", "pv")
-      val dim = spark.sparkContext.parallelize(Range(0, 26))
+      val dim = Range(0, 26)
         .map(x => (x, ('a' + x).toChar.toString))
         .toDF("index", "name")
         .coalesce(1)
@@ -1470,10 +1472,14 @@ class AdaptiveQueryExecSuite
         }
         val queryTime = System.currentTimeMillis() - startTime
         print("queryTime: " + queryTime + "\n")
-        stageInfos.foreach(t => {
+        val sortedStageInfos = stageInfos.sortBy(_.submissionTime)
+        sortedStageInfos.foreach(t => {
           print(t.stageId + "; " + t.submissionTime + "; " + t.numTasks + "; "
             + t.name + "; " + t.rddInfos.mkString(",") + "\n")
         })
+        assert(sortedStageInfos.size > 2)
+        assert(sortedStageInfos(0).numTasks == 1)
+        assert(sortedStageInfos(1).numTasks == shuffleMapTaskParallsm)
       }
     }
   }

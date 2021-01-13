@@ -2373,6 +2373,7 @@ class SparkContext(config: SparkConf) extends Logging {
    */
   private[spark] def submitMapStage[K, V, C](dependency: ShuffleDependency[K, V, C])
       : SimpleFutureAction[MapOutputStatistics] = {
+    print(System.currentTimeMillis() + " submitMapStage for: " + dependency + "\n")
     assertNotStopped()
     val callSite = getCallSite()
     var result: MapOutputStatistics = null

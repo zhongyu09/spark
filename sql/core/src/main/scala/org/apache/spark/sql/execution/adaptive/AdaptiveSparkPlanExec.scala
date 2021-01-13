@@ -23,7 +23,8 @@ import java.util.concurrent.LinkedBlockingQueue
 import scala.collection.JavaConverters._
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
-import scala.concurrent.ExecutionContext
+import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.duration.Duration
 import scala.util.control.NonFatal
 
 import org.apache.spark.SparkException
@@ -189,20 +190,41 @@ case class AdaptiveSparkPlanExec(
           stagesToReplace = result.newStages ++ stagesToReplace
           executionId.foreach(onUpdatePlan(_, result.newStages.map(_.plan)))
 
-          // SPARK-33933: we should submit tasks of broadcast stages first, to avoid waiting
-          // for tasks to be scheduled and leading to broadcast timeout.
-          val reorderedNewStages = result.newStages
-            .sortWith {
-              case (_: BroadcastQueryStageExec, _: BroadcastQueryStageExec) => false
-              case (_: BroadcastQueryStageExec, _) => true
-              case _ => false
-            }
-
-          print("Tigger materializes...")
-          // Start materialization of all new stages and fail fast if any stages failed eagerly
-          reorderedNewStages.foreach { stage =>
+          // SPARK-33933: we should materialize broadcast stages first and wait the
+          // materialization  finish before materialize other stages, to avoid waiting
+          // for broadcast tasks to be scheduled and leading to broadcast timeout.
+          val startTime = System.currentTimeMillis()
+          val broadcastMaterializationFutures: Seq[Future[Any]] = result.newStages
+            .filter(_.isInstanceOf[BroadcastQueryStageExec]).map { stage =>
+            var future: Future[Any] = null
             try {
-              print("Tigger materialize: " + stage)
+              print(System.currentTimeMillis() + " Trigger materialize for: " + stage)
+              future = stage.materialize()
+              future.onComplete { res =>
+                if (res.isSuccess) {
+                  events.offer(StageSuccess(stage, res.get))
+                } else {
+                  events.offer(StageFailure(stage, res.failed.get))
+                }
+              }(AdaptiveSparkPlanExec.executionContext)
+            } catch {
+              case e: Throwable =>
+                cleanUpAndThrowException(Seq(e), Some(stage.id))
+            }
+            future
+          }
+
+          print(System.currentTimeMillis() + " Wait broadcast materialization future. \n")
+          broadcastMaterializationFutures.foreach(ThreadUtils.awaitReady(_, Duration.Inf))
+          print(System.currentTimeMillis() + " Total time cost = " +
+            (System.currentTimeMillis() - startTime) + " \n")
+
+          print(System.currentTimeMillis() + " Trigger shuffle materializes... \n")
+          // Start materialization of all new stages and fail fast if any stages failed eagerly
+          result.newStages.filter(!_.isInstanceOf[BroadcastQueryStageExec])
+            .foreach { stage =>
+            try {
+              print(System.currentTimeMillis() + " Trigger materialize for: " + stage)
               stage.materialize().onComplete { res =>
                 if (res.isSuccess) {
                   events.offer(StageSuccess(stage, res.get))

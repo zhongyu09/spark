@@ -177,6 +177,8 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
     if (isCanonicalizedPlan) {
       throw new IllegalStateException("A canonicalized plan is not supposed to be executed.")
     }
+    print(System.currentTimeMillis() +  " [" + Thread.currentThread() +  "] "
+      + this.getClass + " SparkPlan.doExecute \n")
     doExecute()
   }
 
@@ -213,8 +215,14 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
    */
   protected final def executeQuery[T](query: => T): T = {
     RDDOperationScope.withScope(sparkContext, nodeName, false, true) {
+      print(System.currentTimeMillis() + " [" + Thread.currentThread() +  "] "
+        + this.getClass + " SparkPlan.prepare \n")
       prepare()
+      print(System.currentTimeMillis() +  " [" + Thread.currentThread() +  "] "
+        + this.getClass + " SparkPlan.waitForSubqueries \n")
       waitForSubqueries()
+      print(System.currentTimeMillis() +  " [" + Thread.currentThread() +  "] "
+        + this.getClass + " SparkPlan.query \n")
       query
     }
   }

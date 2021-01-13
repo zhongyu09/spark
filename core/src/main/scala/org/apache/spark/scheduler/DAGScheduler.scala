@@ -810,6 +810,7 @@ private[spark] class DAGScheduler(
     }
 
     val jobId = nextJobId.getAndIncrement()
+    print(System.currentTimeMillis() + " DAGScheduler.submitJob Id = " + jobId + " \n")
     if (partitions.isEmpty) {
       val clonedProperties = Utils.cloneProperties(properties)
       if (sc.getLocalProperty(SparkContext.SPARK_JOB_DESCRIPTION) == null) {
@@ -827,6 +828,7 @@ private[spark] class DAGScheduler(
     assert(partitions.nonEmpty)
     val func2 = func.asInstanceOf[(TaskContext, Iterator[_]) => _]
     val waiter = new JobWaiter[U](this, jobId, partitions.size, resultHandler)
+    print(System.currentTimeMillis() + " eventProcessLoop.post JobSubmitted \n")
     eventProcessLoop.post(JobSubmitted(
       jobId, rdd, func2, partitions.toArray, callSite, waiter,
       Utils.cloneProperties(properties)))
@@ -854,6 +856,7 @@ private[spark] class DAGScheduler(
       callSite: CallSite,
       resultHandler: (Int, U) => Unit,
       properties: Properties): Unit = {
+    print(System.currentTimeMillis() + " DAGScheduler.runJob \n")
     val start = System.nanoTime
     val waiter = submitJob(rdd, func, partitions, callSite, resultHandler, properties)
     ThreadUtils.awaitReady(waiter.completionFuture, Duration.Inf)
@@ -925,6 +928,7 @@ private[spark] class DAGScheduler(
 
     val rdd = dependency.rdd
     val jobId = nextJobId.getAndIncrement()
+    print(System.currentTimeMillis() + " DAGScheduler.submitMapStage jobId = " + jobId + " \n")
     if (rdd.partitions.length == 0) {
       throw new SparkException("Can't run submitMapStage on RDD with 0 partitions")
     }
@@ -937,6 +941,7 @@ private[spark] class DAGScheduler(
     val waiter = new JobWaiter[MapOutputStatistics](
       this, jobId, 1,
       (_: Int, r: MapOutputStatistics) => callback(r))
+    print(System.currentTimeMillis() + " eventProcessLoop.post MapStageSubmitted \n")
     eventProcessLoop.post(MapStageSubmitted(
       jobId, dependency, callSite, waiter, Utils.cloneProperties(properties)))
     waiter
