@@ -1438,11 +1438,11 @@ class AdaptiveQueryExecSuite
     for (i <- Range(0, 10)) {
       Thread.sleep(5000)
       print("\n\nTest round: " + i + "\n")
-      val broadcastTimeoutInSec = 1
+      val broadcastTimeoutInSec = 2
       val shuffleMapTaskParallsm = 100
       val df = spark.sparkContext.parallelize(Range(0, 100), shuffleMapTaskParallsm)
         .flatMap(x => {
-          Thread.sleep(50)
+          Thread.sleep(80)
           for (i <- Range(0, 100)) yield (x % 26, x % 10)
         }).toDF("index", "pv")
       val dim = Range(0, 26)
@@ -1464,12 +1464,8 @@ class AdaptiveQueryExecSuite
       withSQLConf(SQLConf.BROADCAST_TIMEOUT.key -> broadcastTimeoutInSec.toString,
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
         val startTime = System.currentTimeMillis()
-        try {
-          val result = testDf.collect()
-          assert(result.length == 26)
-        } catch {
-          case e: Exception => print("Fail: " + e + "\n")
-        }
+        val result = testDf.collect()
+        assert(result.length == 26)
         val queryTime = System.currentTimeMillis() - startTime
         print("queryTime: " + queryTime + "\n")
         val sortedStageInfos = stageInfos.sortBy(_.submissionTime)
