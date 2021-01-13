@@ -172,6 +172,7 @@ case class AdaptiveSparkPlanExec(
   }
 
   private def getFinalPhysicalPlan(): SparkPlan = lock.synchronized {
+    print(System.currentTimeMillis() + " getFinalPhysicalPlan \n")
     if (isFinalPlan) return currentPhysicalPlan
 
     // In case of this adaptive plan being executed out of `withActive` scoped functions, e.g.,
@@ -185,6 +186,7 @@ case class AdaptiveSparkPlanExec(
       val errors = new mutable.ArrayBuffer[Throwable]()
       var stagesToReplace = Seq.empty[QueryStageExec]
       while (!result.allChildStagesMaterialized) {
+        print(System.currentTimeMillis() + " while (!result.allChildStagesMaterialized) \n")
         currentPhysicalPlan = result.newPlan
         if (result.newStages.nonEmpty) {
           stagesToReplace = result.newStages ++ stagesToReplace
@@ -198,9 +200,10 @@ case class AdaptiveSparkPlanExec(
             .filter(_.isInstanceOf[BroadcastQueryStageExec]).map { stage =>
             var future: Future[Any] = null
             try {
-              print(System.currentTimeMillis() + " Trigger materialize for: " + stage)
+              print(System.currentTimeMillis() + " Trigger materialize for: " + stage + "\n")
               future = stage.materialize()
               future.onComplete { res =>
+                print(System.currentTimeMillis() + " future.onComplete: " + res + "\n")
                 if (res.isSuccess) {
                   events.offer(StageSuccess(stage, res.get))
                 } else {
@@ -224,7 +227,7 @@ case class AdaptiveSparkPlanExec(
           result.newStages.filter(!_.isInstanceOf[BroadcastQueryStageExec])
             .foreach { stage =>
             try {
-              print(System.currentTimeMillis() + " Trigger materialize for: " + stage)
+              print(System.currentTimeMillis() + " Trigger materialize for: " + stage + "\n")
               stage.materialize().onComplete { res =>
                 if (res.isSuccess) {
                   events.offer(StageSuccess(stage, res.get))
@@ -243,8 +246,10 @@ case class AdaptiveSparkPlanExec(
         // new stages can be created. There might be other stages that finish at around the same
         // time, so we process those stages too in order to reduce re-planning.
         val nextMsg = events.take()
+        print(System.currentTimeMillis() + " nextMsg: " + nextMsg + "\n")
         val rem = new util.ArrayList[StageMaterializationEvent]()
         events.drainTo(rem)
+        print(System.currentTimeMillis() + " rem: " + rem + "\n")
         (Seq(nextMsg) ++ rem.asScala).foreach {
           case StageSuccess(stage, res) =>
             stage.resultOption.set(Some(res))
@@ -431,6 +436,7 @@ case class AdaptiveSparkPlanExec(
    */
   private def createQueryStages(plan: SparkPlan): CreateStageResult = plan match {
     case e: Exchange =>
+      print(System.currentTimeMillis() + " createQueryStages for Exchange \n")
       // First have a quick check in the `stageCache` without having to traverse down the node.
       context.stageCache.get(e.canonicalized) match {
         case Some(existingStage) if conf.exchangeReuseEnabled =>
@@ -468,10 +474,12 @@ case class AdaptiveSparkPlanExec(
       }
 
     case q: QueryStageExec =>
+      print(System.currentTimeMillis() + " createQueryStages for QueryStageExec \n")
       CreateStageResult(newPlan = q,
         allChildStagesMaterialized = q.resultOption.get().isDefined, newStages = Seq.empty)
 
     case _ =>
+      print(System.currentTimeMillis() + " createQueryStages for _ \n")
       if (plan.children.isEmpty) {
         CreateStageResult(newPlan = plan, allChildStagesMaterialized = true, newStages = Seq.empty)
       } else {
@@ -484,6 +492,7 @@ case class AdaptiveSparkPlanExec(
   }
 
   private def newQueryStage(e: Exchange): QueryStageExec = {
+    print(System.currentTimeMillis() + " newQueryStage: " + e + " \n")
     val optimizedPlan = applyPhysicalRules(
       e.child, queryStageOptimizerRules, Some((planChangeLogger, "AQE Query Stage Optimization")))
     val queryStage = e match {
