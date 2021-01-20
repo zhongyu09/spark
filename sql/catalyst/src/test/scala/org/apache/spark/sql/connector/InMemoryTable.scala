@@ -187,6 +187,20 @@ class InMemoryTable(
     true
   }
 
+  protected def removePartitionKey(key: Seq[Any]): Unit = dataMap.synchronized {
+    dataMap.remove(key)
+  }
+
+  protected def createPartitionKey(key: Seq[Any]): Unit = dataMap.synchronized {
+    if (!dataMap.contains(key)) {
+      val emptyRows = new BufferedRows(key.toArray.mkString("/"))
+      val rows = if (key.length == schema.length) {
+        emptyRows.withRow(InternalRow.fromSeq(key))
+      } else emptyRows
+      dataMap.put(key, rows)
+    }
+  }
+
   def withData(data: Array[BufferedRows]): InMemoryTable = dataMap.synchronized {
     data.foreach(_.rows.foreach { row =>
       val key = getKey(row)
@@ -270,11 +284,13 @@ class InMemoryTable(
         this
       }
 
-      override def buildForBatch(): BatchWrite = writer
+      override def build(): Write = new Write {
+        override def toBatch: BatchWrite = writer
 
-      override def buildForStreaming(): StreamingWrite = streamingWriter match {
-        case exc: StreamingNotSupportedOperation => exc.throwsException()
-        case s => s
+        override def toStreaming: StreamingWrite = streamingWriter match {
+          case exc: StreamingNotSupportedOperation => exc.throwsException()
+          case s => s
+        }
       }
     }
   }

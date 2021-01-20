@@ -348,7 +348,7 @@ case class DescribeRelation(
  */
 case class DescribeColumn(
     relation: LogicalPlan,
-    colNameParts: Seq[String],
+    column: Expression,
     isExtended: Boolean) extends Command {
   override def children: Seq[LogicalPlan] = Seq(relation)
   override def output: Seq[Attribute] = DescribeCommandSchema.describeColumnAttributes()
@@ -833,6 +833,7 @@ case class CacheTable(
 case class CacheTableAsSelect(
     tempViewName: String,
     plan: LogicalPlan,
+    originalText: String,
     isLazy: Boolean,
     options: Map[String, String]) extends Command
 

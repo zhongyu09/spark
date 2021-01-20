@@ -91,4 +91,28 @@ trait DDLCommandTestUtils extends SQLTestUtils {
   }
 
   protected def checkLocation(t: String, spec: TablePartitionSpec, expected: String): Unit
+
+  // Getting the total table size in the filesystem in bytes
+  def getTableSize(tableName: String): Int = {
+    val stats =
+      sql(s"DESCRIBE TABLE EXTENDED $tableName")
+        .where("col_name = 'Statistics'")
+        .select("data_type")
+    if (stats.isEmpty) {
+      throw new IllegalArgumentException(s"The table $tableName does not have stats")
+    }
+    val tableSizeInStats = "^(\\d+) bytes.*$".r
+    val size = stats.first().getString(0) match {
+      case tableSizeInStats(s) => s.toInt
+      case _ => throw new IllegalArgumentException("Not found table size in stats")
+    }
+    size
+  }
+
+  def partSpecToString(spec: Map[String, Any]): String = {
+    spec.map {
+      case (k, v: String) => s"$k = '$v'"
+      case (k, v) => s"$k = $v"
+    }.mkString("PARTITION (", ", ", ")")
+  }
 }

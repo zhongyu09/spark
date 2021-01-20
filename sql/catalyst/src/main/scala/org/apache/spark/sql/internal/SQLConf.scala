@@ -796,11 +796,11 @@ object SQLConf {
     .doc("Sets the compression codec used when writing ORC files. If either `compression` or " +
       "`orc.compress` is specified in the table-specific options/properties, the precedence " +
       "would be `compression`, `orc.compress`, `spark.sql.orc.compression.codec`." +
-      "Acceptable values include: none, uncompressed, snappy, zlib, lzo.")
+      "Acceptable values include: none, uncompressed, snappy, zlib, lzo, zstd.")
     .version("2.3.0")
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
-    .checkValues(Set("none", "uncompressed", "snappy", "zlib", "lzo"))
+    .checkValues(Set("none", "uncompressed", "snappy", "zlib", "lzo", "zstd"))
     .createWithDefault("snappy")
 
   val ORC_IMPLEMENTATION = buildConf("spark.sql.orc.impl")
@@ -1550,6 +1550,14 @@ object SQLConf {
       .checkValue(depth => depth > 0, "The maximum depth of a view reference in a nested view " +
         "must be positive.")
       .createWithDefault(100)
+
+  val ALLOW_PARAMETERLESS_COUNT =
+    buildConf("spark.sql.legacy.allowParameterlessCount")
+      .internal()
+      .doc("When true, the SQL function 'count' is allowed to take no parameters.")
+      .version("3.1.1")
+      .booleanConf
+      .createWithDefault(false)
 
   val USE_CURRENT_SQL_CONFIGS_FOR_VIEW =
     buildConf("spark.sql.legacy.useCurrentConfigsForView")
@@ -3036,6 +3044,13 @@ object SQLConf {
       .booleanConf
       .createWithDefault(false)
 
+  val CLI_PRINT_HEADER =
+    buildConf("spark.sql.cli.print.header")
+     .doc("When set to true, spark-sql CLI prints the names of the columns in query output.")
+     .version("3.2.0")
+    .booleanConf
+    .createWithDefault(false)
+
   /**
    * Holds information about keys that have been deprecated.
    *
@@ -3693,6 +3708,8 @@ class SQLConf extends Serializable with Logging {
   def disabledJdbcConnectionProviders: String = getConf(SQLConf.DISABLED_JDBC_CONN_PROVIDER_LIST)
 
   def charVarcharAsString: Boolean = getConf(SQLConf.LEGACY_CHAR_VARCHAR_AS_STRING)
+
+  def cliPrintHeader: Boolean = getConf(SQLConf.CLI_PRINT_HEADER)
 
   /** ********************** SQLConf functionality methods ************ */
 

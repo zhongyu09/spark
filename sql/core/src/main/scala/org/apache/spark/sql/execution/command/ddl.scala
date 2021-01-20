@@ -237,8 +237,10 @@ case class DropTableCommand(
 
     if (isTempView || catalog.tableExists(tableName)) {
       try {
+        val hasViewText = isTempView &&
+          catalog.getTempViewOrPermanentTableMetadata(tableName).viewText.isDefined
         sparkSession.sharedState.cacheManager.uncacheQuery(
-          sparkSession.table(tableName), cascade = !isTempView)
+          sparkSession.table(tableName), cascade = !isTempView || hasViewText)
       } catch {
         case NonFatal(e) => log.warn(e.toString, e)
       }
@@ -485,17 +487,18 @@ case class AlterTableAddPartitionCommand(
       catalog.createPartitions(table.identifier, batch, ignoreIfExists = ifNotExists)
     }
 
-    if (table.stats.nonEmpty) {
-      if (sparkSession.sessionState.conf.autoSizeUpdateEnabled) {
-        val addedSize = CommandUtils.calculateMultipleLocationSizes(sparkSession, table.identifier,
-          parts.map(_.storage.locationUri)).sum
-        if (addedSize > 0) {
-          val newStats = CatalogStatistics(sizeInBytes = table.stats.get.sizeInBytes + addedSize)
-          catalog.alterTableStats(table.identifier, Some(newStats))
-        }
-      } else {
-        catalog.alterTableStats(table.identifier, None)
+    sparkSession.catalog.refreshTable(table.identifier.quotedString)
+    if (table.stats.nonEmpty && sparkSession.sessionState.conf.autoSizeUpdateEnabled) {
+      // Updating table stats only if new partition is not empty
+      val addedSize = CommandUtils.calculateMultipleLocationSizes(sparkSession, table.identifier,
+        parts.map(_.storage.locationUri)).sum
+      if (addedSize > 0) {
+        val newStats = CatalogStatistics(sizeInBytes = table.stats.get.sizeInBytes + addedSize)
+        catalog.alterTableStats(table.identifier, Some(newStats))
       }
+    } else {
+      // Re-calculating of table size including all partitions
+      CommandUtils.updateTableStats(sparkSession, table)
     }
     Seq.empty[Row]
   }
@@ -536,6 +539,7 @@ case class AlterTableRenamePartitionCommand(
 
     catalog.renamePartitions(
       tableName, Seq(normalizedOldPartition), Seq(normalizedNewPartition))
+    sparkSession.catalog.refreshTable(table.identifier.quotedString)
     Seq.empty[Row]
   }
 
@@ -581,6 +585,7 @@ case class AlterTableDropPartitionCommand(
       table.identifier, normalizedSpecs, ignoreIfNotExists = ifExists, purge = purge,
       retainData = retainData)
 
+    sparkSession.catalog.refreshTable(table.identifier.quotedString)
     CommandUtils.updateTableStats(sparkSession, table)
 
     Seq.empty[Row]
@@ -673,7 +678,7 @@ case class AlterTableRecoverPartitionsCommand(
     // This is always the case for Hive format tables, but is not true for Datasource tables created
     // before Spark 2.1 unless they are converted via `msck repair table`.
     spark.sessionState.catalog.alterTable(table.copy(tracksPartitionsInCatalog = true))
-    catalog.refreshTable(tableName)
+    spark.catalog.refreshTable(tableIdentWithDB)
     logInfo(s"Recovered all partitions ($total).")
     Seq.empty[Row]
   }
