@@ -1435,23 +1435,30 @@ class AdaptiveQueryExecSuite
   }
 
   test("SPARK-33933: AQE broadcast should not timeout with slow map tasks") {
-    for (i <- Range(0, 10)) {
+    for (i <- Range(0, 1)) {
       Thread.sleep(5000)
       print("\n\nTest round: " + i + "\n")
-      val broadcastTimeoutInSec = 2
+      val broadcastTimeoutInSec = 2000
       val shuffleMapTaskParallsm = 100
       val df = spark.sparkContext.parallelize(Range(0, 100), shuffleMapTaskParallsm)
         .flatMap(x => {
           Thread.sleep(80)
           for (i <- Range(0, 100)) yield (x % 26, x % 10)
         }).toDF("index", "pv")
-      val dim = Range(0, 26)
+      val dim = spark.sparkContext.parallelize(Range(0, 26))
+        .map(x => {
+          Thread.sleep(500);
+          x})
+        .map(x => (x, ('a' + x).toChar.toString))
+        .toDF("index", "name")
+        .coalesce(1)
+      val dim2 = Range(0, 26)
         .map(x => (x, ('a' + x).toChar.toString))
         .toDF("index", "name")
         .coalesce(1)
       val testDf = df.groupBy("index")
         .agg(sum($"pv").alias("pv"))
-        .join(dim, Seq("index"))
+        .join(broadcast(dim), Seq("index"))
 
       val stageInfos = scala.collection.mutable.ArrayBuffer[StageInfo]()
       val listener = new SparkListener {
@@ -1462,7 +1469,7 @@ class AdaptiveQueryExecSuite
       spark.sparkContext.addSparkListener(listener)
 
       withSQLConf(SQLConf.BROADCAST_TIMEOUT.key -> broadcastTimeoutInSec.toString,
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
         val startTime = System.currentTimeMillis()
         val result = testDf.collect()
         assert(result.length == 26)
@@ -1473,6 +1480,7 @@ class AdaptiveQueryExecSuite
           print(t.stageId + "; " + t.submissionTime + "; " + t.numTasks + "; "
             + t.name + "; " + t.rddInfos.mkString(",") + "\n")
         })
+        Thread.sleep(100000)
         assert(sortedStageInfos.size > 2)
         assert(sortedStageInfos(0).numTasks == 1)
         assert(sortedStageInfos(1).numTasks == shuffleMapTaskParallsm)
