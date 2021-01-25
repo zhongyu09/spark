@@ -37,6 +37,8 @@ import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+import scala.concurrent.{ExecutionContext, Future}
+
 object SparkPlan {
   /** The original [[LogicalPlan]] from which this [[SparkPlan]] is converted. */
   val LOGICAL_PLAN_TAG = TreeNodeTag[LogicalPlan]("logical_plan")
@@ -406,6 +408,20 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
     val total = countsAndBytes.map(_._1).sum
     val rows = countsAndBytes.iterator.flatMap(countAndBytes => decodeUnsafeRows(countAndBytes._2))
     (total, rows)
+  }
+
+  /**
+   * Runs this query in async way and returning the future of array result.
+   */
+  private[spark] def executeCollectIteratorFuture()(
+    implicit executor: ExecutionContext): Future[(Long, Iterator[InternalRow])] = {
+    val future = getByteArrayRdd().collectAsync()
+    future.map(countsAndBytes => {
+      val total = countsAndBytes.map(_._1).sum
+      val rows = countsAndBytes.iterator
+        .flatMap(countAndBytes => decodeUnsafeRows(countAndBytes._2))
+      (total, rows)
+    })
   }
 
   /**
